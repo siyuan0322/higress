@@ -599,3 +599,52 @@ $ curl -v -X POST console.higress.io/post \
   ...
 }
 ```
+
+
+### 自定义扩展
+
+将 header 中的 KV 放到 Baggage 中，并且添加 `traffic.llm_sdk` 的前缀以使其能被注入到 baggage 借助 OpenTelemetry 的能力全链路透传。
+例如对于下面的 `X-DashScope-TrafficPolicy` 字段，第一步先将其 `fromKey` 重命名为 `toKey`,, 再将其拼成 `{k}={v}` 的形式添加到 `injectKey` 中。如果 `injectKey` 已存在，则用 `,` 分割添加到其原 Value 后面。
+注意不要删除原 Key
+
+`injectKey`: 被注入的 Key
+`fromKey`: 要注入的来源 key
+`toKey`: 要注入的目标 key
+
+下面是规则示例
+
+```yaml
+reqRules:
+- operate: inject
+  headers:
+  - injectKey: Baggage
+    fromKey: X-DashScope-TrafficPolicy
+    toKey: traffic.llm_sdk.traffic_policy
+```
+
+#### 实际的一个例子
+```shell
+# 1. 初始 KV
+X-DashScope-TrafficPolicy: {"preferred-biz-gateway-service-addr": "x.x.x.x:9090"}
+# 2. 重命名
+traffic.llm_sdk.traffic_policy: {"preferred-biz-gateway-service-addr": "x.x.x.x:9090"}
+# 3. 注入到 Baggage 的 value 中
+Baggage: "a=b,traffic.llm_sdk.traffic_policy={"preferred-biz-gateway-service-addr": "x.x.x.x:9090"}"
+```
+
+- 更具体的，被插件转换前的 header：
+  ```json
+  {
+    "X-DashScope-TrafficPolicy": "{\"preferred-biz-gateway-service-addr\": \"x.x.x.x:9090\"}",
+    "Baggage": "a=b",
+  }
+  ```
+
+- 被插件转换后的 header：
+  ```json
+  {
+    "X-DashScope-TrafficPolicy": "{\"preferred-biz-gateway-service-addr\": \"x.x.x.x:9090\"}",
+    "Baggage": "a=b,traffic.llm_sdk.traffic_policy={\"preferred-biz-gateway-service-addr\": \"x.x.x.x:9090\"}",
+  }
+  ```
+
