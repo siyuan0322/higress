@@ -197,6 +197,10 @@ reqRules:
   headers:
   - fromKey: X-add-append
     toKey: X-map
+- operate: inject
+  headers:
+  - fromKey: X-add-append
+    toKey: X-inject
 - operate: dedupe
   headers:
   - key: X-dedupe-first
@@ -644,7 +648,30 @@ Baggage: "a=b,traffic.llm_sdk.traffic_policy={"preferred-biz-gateway-service-add
   ```json
   {
     "X-DashScope-TrafficPolicy": "{\"preferred-biz-gateway-service-addr\": \"x.x.x.x:9090\"}",
+    "preferred-biz-gateway-service-addr": "x.x.x.x:9090",
     "Baggage": "a=b,traffic.llm_sdk.traffic_policy={\"preferred-biz-gateway-service-addr\": \"x.x.x.x:9090\"}",
   }
   ```
 
+#### 转换请求头部
+1. 使用自定义extract 提取X-DashScope-TrafficPolicy: {"preferred-biz-gateway-service-addr": "x.x.x.x:9090"} 并创建 traffic.llm_sdk.traffic_policy
+   // 判断traffic.llm_sdk.traffic_policy是否存在，存在则替换，不存在则添加 是否会引入问题. 
+   该步骤结束后 header在保留 "X-DashScope-TrafficPolicy": "{\"preferred-biz-gateway-service-addr\": \"x.x.x.x:9090\"}" 基础上新增了 “preferred-biz-gateway-service-addr”: "x.x.x.x:9090" 
+2. 使用自定义inject operation 将 新header 的value以 key=value形式 添加到 Baggage 中
+   判断Baggage是否存在，存在则添加，不存在则创建
+   // 该步骤结束后 header为 "X-DashScope-TrafficPolicy": "{\"preferred-biz-gateway-service-addr\": \"x.x.x.x:9090\"}" 和 “preferred-biz-gateway-service-addr”: "x.x.x.x:9090" 和 “Baggage”: "a=b,traffic.llm_sdk.traffic_policy={\"preferred-biz-gateway-service-addr\": \"x.x.x.x:9090\"}"
+
+
+
+```yaml
+reqRules:
+- operate: extract
+  headers: 
+  - fromKey: X-DashScope-TrafficPolicy 
+    toKey: preferred-biz-gateway-service-addr
+	extractKey: preferred-biz-gateway-service-addr  
+- operate: inject
+  headers:
+  - fromKey: preferred-biz-gateway-service-addr 
+    toKey: Baggage
+	injectKey: traffic.llm_sdk.traffic_policy 

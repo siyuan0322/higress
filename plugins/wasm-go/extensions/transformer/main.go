@@ -189,6 +189,20 @@ type MapParam struct {
 	toKey string `yaml:"toKey"`
 }
 
+type ExtractParam struct {
+	// @Title 映射来源key
+	// @Description
+	fromKey string `yaml:"fromKey"`
+
+	// @Title 映射目标
+	// @Description
+	toKey string `yaml:"toKey"`
+
+	// @Title 提取key
+	// @Description
+	extractKey string `yaml:"extractKey"`
+}
+
 type InjectParam struct {
 	// @Title 映射来源key
 	// @Description
@@ -219,6 +233,7 @@ type Param struct {
 	addParam     AddParam
 	appendParam  AppendParam
 	mapParam     MapParam
+	extractParam ExtractParam
 	injectParam  InjectParam
 	dedupeParam  DedupeParam
 	// @Title 值类型
@@ -292,6 +307,10 @@ func constructParam(item gjson.Result, op, valueType string) Param {
 	case "map":
 		p.mapParam.fromKey = item.Get("fromKey").String()
 		p.mapParam.toKey = item.Get("toKey").String()
+	case "emap":
+		p.extractParam.fromKey = item.Get("fromKey").String()
+		p.extractParam.toKey = item.Get("toKey").String()
+		p.extractParam.extractKey = item.Get("extractKey").String()
 	case "inject":
 		p.injectParam.fromKey = item.Get("fromKey").String()
 		p.injectParam.toKey = item.Get("toKey").String()
@@ -717,7 +736,7 @@ func newTransformRule(rules []gjson.Result) (res []TransformRule, err error) {
 			return
 		}
 
-		if tRule.operate == "map" || tRule.operate == "inject" {
+		if tRule.operate == "map" || tRule.operate == "inject" || tRule.operate == "extract" {
 			mapSourceInJson := r.Get("mapSource")
 			if !mapSourceInJson.Exists() {
 				tRule.mapSource = "self"
@@ -998,8 +1017,54 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 					}
 				}
 			}
+		case ExtractK:
+			// extract: 从指定的fromKey的值（为可转化为json的[]string）中提取extractKey的值，追加到toKey的值中
+			// 例: OriginHeader: X-DashScope-TrafficPolicy: {"preferred-biz-gateway-service-addr": "x.x.x.x:9090","preferred-dubbo-service-tag":"gray"}
+			// extract: fromKey: X-DashScope-TrafficPolicy, extractKey: preferred-biz-gateway-service-addr, toKey: biz-gateway-service-addr
+			for _, extract := range kvtOp.extractKvtGroup {
+				fromKey, toKey, extractKey := extract.fromKey, extract.toKey, extract.extractKey
+				if kvtOp.mapSource == "headers" {
+					fromKey = strings.ToLower(fromKey)
+				}
+				source, exist := mapSourceData[kvtOp.mapSource]
+				if !exist {
+					proxywasm.LogWarnf("extract key failed, source:%s not exists in %s", fromKey, kvtOp.mapSource)
+					continue
+				}
+				// SLS只收录Info级别以上的插件日志，为联调方便，将插件日志级别调整为Info。稳定运行后建议调整为Debug级别。
+				proxywasm.LogInfof("extract search key:%s in source:%s", fromKey, kvtOp.mapSource)
+				if fromValue, ok := source.search(fromKey); ok {
+					// 从fromValue中提取extractKey对应的值，追加到toKey的值中
+					// fromValue: []string{"{"preferred-biz-gateway-service-addr": "x.x.x.x:9090","preferred-dubbo-service-tag":"gray"}"}
+					if len(fromValue.([]string)) == 0 {
+						proxywasm.LogWarnf("extract key failed, fromKey:%s value is empty", fromKey)
+						continue
+					}
+					// 提取extractKey对应的值
+					extractValue := ""
+					for _, v := range fromValue.([]string) {
+						if gjson.Get(v, extractKey).Exists() {
+							extractValue = gjson.Get(v, extractKey).String()
+							break
+						}
+					}
+					if extractValue == "" {
+						proxywasm.LogWarnf("extract key failed, fromKey:%s extractKey:%s value is empty", fromKey, extractKey)
+						continue
+					}
+					// 追加到toKey的值中
+					if toValue, ok := kvs[toKey]; ok {
+						kvs[toKey] = append(toValue, extractValue)
+					} else {
+						kvs[toKey] = []string{extractValue}
+					}
+					proxywasm.LogInfof("extract key:%s to key:%s success, value after extract is: %v", fromKey, toKey, kvs[toKey])
+				}
+			}
 		case InjectK:
 			// inject: 若指定 fromKey不存在则无操作; 否则将 fromKey的值, 以 injectKey={fromKey: fromValue} 的形式append到toKey的toValue中, 如果toKey不存在则创建
+			// 例: Header: "preferred-biz-gateway-service-addr": "x.x.x.x:9090"
+			// fromKey: preferred-biz-gateway-service-addr, toKey: Baggage, injectKey: traffic.llm_sdk.traffic_policy => Baggage: traffic.llm_sdk.traffic_policy={"preferred-biz-gateway-service-addr": "x.x.x.x:9090"}
 			for _, inject := range kvtOp.injectKvtGroup {
 				fromKey, toKey, injectKey := inject.fromKey, inject.toKey, inject.injectKey
 				if kvtOp.mapSource == "headers" {
@@ -1007,31 +1072,26 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 				}
 				source, exist := mapSourceData[kvtOp.mapSource]
 				if !exist {
-					proxywasm.LogWarnf("inject source key failed, source:%s not exists", kvtOp.mapSource)
+					proxywasm.LogWarnf("inject source key failed, source:%s not exists in %s", fromKey, kvtOp.mapSource)
 					continue
 				}
-				proxywasm.LogDebugf("search key:%s in source:%s", fromKey, kvtOp.mapSource)
+				// SLS只收录Info级别以上的插件日志，为联调方便，将插件日志级别调整为Info。稳定运行后建议调整为Debug级别。
+				proxywasm.LogInfof("inject search key:%s in source:%s", fromKey, kvtOp.mapSource)
 				if fromValue, ok := source.search(fromKey); ok {
-					switch source.mapSourceType {
-					case "headers", "querys", "bodyKv":
-						if toValue, ok := kvs[toKey]; ok {
-							injectValue := fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, fromValue.([]string)[0])
-							kvs[toKey] = append(toValue, injectValue)
-						} else {
-							kvs[toKey] = []string{fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, fromValue.([]string)[0])}
-						}
-						proxywasm.LogDebugf("inject key:%s to key:%s success, value after inject is: %v", fromKey, toKey, kvs[toKey])
-					case "bodyJson":
-						if valueJson, ok := fromValue.(gjson.Result); ok {
-							valueStr := valueJson.String()
-							if valueStr != "" {
-								if toValue, ok := kvs[toKey]; ok {
-									injectValue := fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, valueStr)
-									kvs[toKey] = append(toValue, injectValue)
-								}
-							}
-						}
+					// fromValue: []string{"{"preferred-biz-gateway-service-addr": "x.x.x.x:9090","preferred-dubbo-service-tag":"gray"}"}
+					if len(fromValue.([]string)) == 0 {
+						proxywasm.LogWarnf("inject key failed, fromKey:%s value is empty", fromKey)
 					}
+					// injectKey={fromKey: fromValue}
+					injectValue := fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, fromValue.([]string)[0])
+					// append到toKey的toValue中
+					if toValue, ok := kvs[toKey]; ok {
+						kvs[toKey] = append(toValue, injectValue)
+					} else {
+						kvs[toKey] = []string{injectValue}
+					}
+					// SLS只收录Info级别以上的插件日志，为联调方便，将插件日志级别调整为Info。稳定运行后建议调整为Debug级别。
+					proxywasm.LogInfof("inject key:%s to key:%s success, value after inject is: %v", fromKey, toKey, kvs[toKey])
 				}
 			}
 		case DedupeK:
@@ -1299,6 +1359,12 @@ type mapKvt struct {
 	toKey   string
 }
 
+type extractKvt struct {
+	fromKey    string
+	toKey      string
+	extractKey string
+}
+
 type injectKvt struct {
 	fromKey   string
 	toKey     string
@@ -1318,6 +1384,7 @@ const (
 	AppendK
 	MapK
 	DedupeK
+	ExtractK
 	InjectK
 )
 
@@ -1330,6 +1397,7 @@ type kvtOperation struct {
 	appendKvtGroup  []appendKvt
 	mapKvtGroup     []mapKvt
 	dedupeKvtGroup  []dedupeKvt
+	extractKvtGroup []extractKvt
 	injectKvtGroup  []injectKvt
 	mapSource       string
 }
@@ -1363,6 +1431,8 @@ func newKvtGroup(rules []TransformRule, typ string) (g []kvtOperation, isChange 
 			kvtOp.kvtOpType = AddK
 		case "append":
 			kvtOp.kvtOpType = AppendK
+		case "extract":
+			kvtOp.kvtOpType = ExtractK
 		case "inject":
 			kvtOp.kvtOpType = InjectK
 		default:
@@ -1395,6 +1465,18 @@ func newKvtGroup(rules []TransformRule, typ string) (g []kvtOperation, isChange 
 					p.mapParam.fromKey = strings.ToLower(p.mapParam.fromKey)
 				}
 				kvtOp.mapKvtGroup = append(kvtOp.mapKvtGroup, mapKvt{p.mapParam.fromKey, p.mapParam.toKey})
+			case "extract":
+				if typ == "headers" {
+					p.extractParam.toKey = strings.ToLower(p.extractParam.toKey)
+					p.extractParam.extractKey = strings.ToLower(p.extractParam.extractKey)
+					p.extractParam.fromKey = strings.ToLower(p.extractParam.fromKey)
+				}
+				kvtOp.mapSource = r.mapSource
+				if kvtOp.mapSource == "self" {
+					kvtOp.mapSource = typ
+					r.mapSource = typ
+				}
+				kvtOp.extractKvtGroup = append(kvtOp.extractKvtGroup, extractKvt{p.extractParam.fromKey, p.extractParam.toKey, p.extractParam.extractKey})
 			case "inject":
 				if typ == "headers" {
 					p.injectParam.toKey = strings.ToLower(p.injectParam.toKey)
@@ -1453,8 +1535,8 @@ func newKvtGroup(rules []TransformRule, typ string) (g []kvtOperation, isChange 
 		isChange = isChange || len(kvtOp.removeKvtGroup) != 0 ||
 			len(kvtOp.renameKvtGroup) != 0 || len(kvtOp.replaceKvtGroup) != 0 ||
 			len(kvtOp.addKvtGroup) != 0 || len(kvtOp.appendKvtGroup) != 0 ||
-			len(kvtOp.mapKvtGroup) != 0 || len(kvtOp.dedupeKvtGroup) != 0 || len(kvtOp.injectKvtGroup) != 0
-		withMapKvt = withMapKvt || len(kvtOp.mapKvtGroup) != 0 || len(kvtOp.injectKvtGroup) != 0
+			len(kvtOp.mapKvtGroup) != 0 || len(kvtOp.dedupeKvtGroup) != 0 || len(kvtOp.injectKvtGroup) != 0 || len(kvtOp.extractKvtGroup) != 0
+		withMapKvt = withMapKvt || len(kvtOp.mapKvtGroup) != 0 || len(kvtOp.injectKvtGroup) != 0 || len(kvtOp.extractKvtGroup) != 0
 		g = append(g, kvtOp)
 	}
 
