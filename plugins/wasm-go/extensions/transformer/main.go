@@ -15,6 +15,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/higress-group/proxy-wasm-go-sdk/proxywasm"
@@ -44,8 +45,8 @@ func main() {
 // @Priority 100
 // @Title zh-CN 请求/响应转换器
 // @Title en-US Request/Response Transformer
-// @Description zh-CN transformer 插件可以对请求/响应头、请求查询参数、请求/响应体参数进行转换，支持的转换操作类型包括删除、重命名、更新、添加、追加、映射、去重。
-// @Description en-US The transformer plugin can transform request/response headers, request query parameters, and request/response body parameters. Supported transform operations include remove, rename, replace, add, append, map, and dedupe.
+// @Description zh-CN transformer 插件可以对请求/响应头、请求查询参数、请求/响应体参数进行转换，支持的转换操作类型包括删除、重命名、更新、添加、追加、映射、去重、注入。
+// @Description en-US The transformer plugin can transform request/response headers, request query parameters, and request/response body parameters. Supported transform operations include remove, rename, replace, add, append, map, dedupe and inject.
 // @IconUrl https://img.alicdn.com/imgextra/i1/O1CN018iKKih1iVx287RltL_!!6000000004419-2-tps-42-42.png
 // @Version 1.0.0
 //
@@ -89,6 +90,11 @@ func main() {
 //     headers:
 //   - fromKey: X-add-append
 //     toKey: X-map
+//   - operate: inject
+//     headers:
+//   - fromKey: X-add-append
+//     toKey: X-map
+//     injectKey: X-inject
 //   - operate: dedupe
 //     headers:
 //   - key: X-dedupe-first
@@ -108,7 +114,7 @@ type TransformerConfig struct {
 
 type TransformRule struct {
 	// @Title 转换操作类型
-	// @Description 指定转换操作类型，可选值为 remove, rename, replace, add, append, map, dedupe
+	// @Description 指定转换操作类型，可选值为 remove, rename, replace, add, append, map, dedupe, inject
 	operate string `yaml:"operate"`
 
 	// @Title 映射来源类型
@@ -183,6 +189,19 @@ type MapParam struct {
 	toKey string `yaml:"toKey"`
 }
 
+type InjectParam struct {
+	// @Title 映射来源key
+	// @Description
+	fromKey string `yaml:"fromKey"`
+
+	// @Title 映射目标
+	// @Description
+	toKey string `yaml:"toKey"`
+
+	// @Title 注入的key
+	injectKey string `yaml:"injectKey"`
+}
+
 type DedupeParam struct {
 	// @Title 目标key
 	// @Description
@@ -200,6 +219,7 @@ type Param struct {
 	addParam     AddParam
 	appendParam  AppendParam
 	mapParam     MapParam
+	injectParam  InjectParam
 	dedupeParam  DedupeParam
 	// @Title 值类型
 	// @Description 当 content-type=application/json 时，为请求/响应体参数指定值类型，可选值为 object, boolean, number, string(default)
@@ -272,6 +292,10 @@ func constructParam(item gjson.Result, op, valueType string) Param {
 	case "map":
 		p.mapParam.fromKey = item.Get("fromKey").String()
 		p.mapParam.toKey = item.Get("toKey").String()
+	case "inject":
+		p.injectParam.fromKey = item.Get("fromKey").String()
+		p.injectParam.toKey = item.Get("toKey").String()
+		p.injectParam.injectKey = item.Get("injectKey").String()
 	case "dedupe":
 		p.dedupeParam.key = item.Get("key").String()
 		p.dedupeParam.strategy = item.Get("strategy").String()
@@ -693,7 +717,7 @@ func newTransformRule(rules []gjson.Result) (res []TransformRule, err error) {
 			return
 		}
 
-		if tRule.operate == "map" {
+		if tRule.operate == "map" || tRule.operate == "inject" {
 			mapSourceInJson := r.Get("mapSource")
 			if !mapSourceInJson.Exists() {
 				tRule.mapSource = "self"
@@ -974,7 +998,42 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 					}
 				}
 			}
-
+		case InjectK:
+			// inject: 若指定 fromKey不存在则无操作; 否则将 fromKey的值, 以 injectKey={fromKey: fromValue} 的形式append到toKey的toValue中, 如果toKey不存在则创建
+			for _, inject := range kvtOp.injectKvtGroup {
+				fromKey, toKey, injectKey := inject.fromKey, inject.toKey, inject.injectKey
+				if kvtOp.mapSource == "headers" {
+					fromKey = strings.ToLower(fromKey)
+				}
+				source, exist := mapSourceData[kvtOp.mapSource]
+				if !exist {
+					proxywasm.LogWarnf("inject source key failed, source:%s not exists", kvtOp.mapSource)
+					continue
+				}
+				proxywasm.LogDebugf("search key:%s in source:%s", fromKey, kvtOp.mapSource)
+				if fromValue, ok := source.search(fromKey); ok {
+					switch source.mapSourceType {
+					case "headers", "querys", "bodyKv":
+						if toValue, ok := kvs[toKey]; ok {
+							injectValue := fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, fromValue.([]string)[0])
+							kvs[toKey] = append(toValue, injectValue)
+						} else {
+							kvs[toKey] = []string{fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, fromValue.([]string)[0])}
+						}
+						proxywasm.LogDebugf("inject key:%s to key:%s success, value after inject is: %v", fromKey, toKey, kvs[toKey])
+					case "bodyJson":
+						if valueJson, ok := fromValue.(gjson.Result); ok {
+							valueStr := valueJson.String()
+							if valueStr != "" {
+								if toValue, ok := kvs[toKey]; ok {
+									injectValue := fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, valueStr)
+									kvs[toKey] = append(toValue, injectValue)
+								}
+							}
+						}
+					}
+				}
+			}
 		case DedupeK:
 			// dedupe: 根据 strategy 去重：RETAIN_UNIQUE 保留所有唯一值，RETAIN_LAST 保留最后一个值，RETAIN_FIRST 保留第一个值 (default)
 			for _, dedupe := range kvtOp.dedupeKvtGroup {
@@ -1239,6 +1298,12 @@ type mapKvt struct {
 	fromKey string
 	toKey   string
 }
+
+type injectKvt struct {
+	fromKey   string
+	toKey     string
+	injectKey string
+}
 type dedupeKvt struct {
 	key      string
 	strategy string
@@ -1253,6 +1318,7 @@ const (
 	AppendK
 	MapK
 	DedupeK
+	InjectK
 )
 
 type kvtOperation struct {
@@ -1264,6 +1330,7 @@ type kvtOperation struct {
 	appendKvtGroup  []appendKvt
 	mapKvtGroup     []mapKvt
 	dedupeKvtGroup  []dedupeKvt
+	injectKvtGroup  []injectKvt
 	mapSource       string
 }
 
@@ -1296,6 +1363,8 @@ func newKvtGroup(rules []TransformRule, typ string) (g []kvtOperation, isChange 
 			kvtOp.kvtOpType = AddK
 		case "append":
 			kvtOp.kvtOpType = AppendK
+		case "inject":
+			kvtOp.kvtOpType = InjectK
 		default:
 			return nil, false, false, errors.Wrap(err, "invalid operation type")
 		}
@@ -1325,8 +1394,19 @@ func newKvtGroup(rules []TransformRule, typ string) (g []kvtOperation, isChange 
 				if kvtOp.mapSource == "headers" {
 					p.mapParam.fromKey = strings.ToLower(p.mapParam.fromKey)
 				}
-
 				kvtOp.mapKvtGroup = append(kvtOp.mapKvtGroup, mapKvt{p.mapParam.fromKey, p.mapParam.toKey})
+			case "inject":
+				if typ == "headers" {
+					p.injectParam.toKey = strings.ToLower(p.injectParam.toKey)
+					p.injectParam.fromKey = strings.ToLower(p.injectParam.fromKey)
+					p.injectParam.injectKey = strings.ToLower(p.injectParam.injectKey)
+				}
+				kvtOp.mapSource = r.mapSource
+				if kvtOp.mapSource == "self" {
+					kvtOp.mapSource = typ
+					r.mapSource = typ
+				}
+				kvtOp.injectKvtGroup = append(kvtOp.injectKvtGroup, injectKvt{p.injectParam.fromKey, p.injectParam.toKey, p.injectParam.injectKey})
 			case "dedupe":
 				if typ == "headers" {
 					p.dedupeParam.key = strings.ToLower(p.dedupeParam.key)
@@ -1373,8 +1453,8 @@ func newKvtGroup(rules []TransformRule, typ string) (g []kvtOperation, isChange 
 		isChange = isChange || len(kvtOp.removeKvtGroup) != 0 ||
 			len(kvtOp.renameKvtGroup) != 0 || len(kvtOp.replaceKvtGroup) != 0 ||
 			len(kvtOp.addKvtGroup) != 0 || len(kvtOp.appendKvtGroup) != 0 ||
-			len(kvtOp.mapKvtGroup) != 0 || len(kvtOp.dedupeKvtGroup) != 0
-		withMapKvt = withMapKvt || len(kvtOp.mapKvtGroup) != 0
+			len(kvtOp.mapKvtGroup) != 0 || len(kvtOp.dedupeKvtGroup) != 0 || len(kvtOp.injectKvtGroup) != 0
+		withMapKvt = withMapKvt || len(kvtOp.mapKvtGroup) != 0 || len(kvtOp.injectKvtGroup) != 0
 		g = append(g, kvtOp)
 	}
 
@@ -1451,4 +1531,3 @@ func (r reg) matchAndReplace(value, host, path string) string {
 	}
 	return value
 }
-

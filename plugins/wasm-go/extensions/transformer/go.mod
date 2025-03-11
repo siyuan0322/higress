@@ -1,6 +1,8 @@
 module github.com/alibaba/higress/plugins/wasm-go/extensions/transformer
 
-go 1.19
+go 1.23.0
+
+toolchain go1.23.6
 
 replace github.com/alibaba/higress/plugins/wasm-go => ../..
 
@@ -9,7 +11,7 @@ require (
 	github.com/higress-group/proxy-wasm-go-sdk v1.0.0
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.8.4
-	github.com/tidwall/gjson v1.17.3
+	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/pretty v1.2.1
 	github.com/tidwall/sjson v1.2.5
 	github.com/wasilibs/go-re2 v1.6.0
@@ -25,5 +27,6 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/resp v0.1.1 // indirect
 	golang.org/x/sys v0.21.0 // indirect
+	golang.org/x/text v0.23.0
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
