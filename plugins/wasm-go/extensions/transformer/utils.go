@@ -53,7 +53,7 @@ var (
 
 func isValidOperation(op string) bool {
 	switch op {
-	case "remove", "rename", "replace", "add", "append", "map", "dedupe":
+	case "remove", "rename", "replace", "add", "append", "map", "dedupe", "extract", "inject":
 		return true
 	default:
 		return false
