@@ -90,6 +90,11 @@ func main() {
 //     headers:
 //   - fromKey: X-add-append
 //     toKey: X-map
+//   - operate: extract
+//     headers:
+//   - fromKey: X-add-append
+//     toKey: X-ext
+//     extractKey: X-extract
 //   - operate: inject
 //     headers:
 //   - fromKey: X-add-append
@@ -1021,7 +1026,6 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 			// extract: 从指定的fromKey的值（为可转化为json的[]string）中提取extractKey的值，追加到toKey的值中
 			// 例: OriginHeader: X-DashScope-TrafficPolicy: {"preferred-biz-gateway-service-addr": "x.x.x.x:9090","preferred-dubbo-service-tag":"gray"}
 			// extract: fromKey: X-DashScope-TrafficPolicy, extractKey: preferred-biz-gateway-service-addr, toKey: biz-gateway-service-addr
-			proxywasm.LogInfof("going to extract key:%s from key:%s to key:%s", kvtOp.extractKvtGroup[0].extractKey, kvtOp.extractKvtGroup[0].fromKey, kvtOp.extractKvtGroup[0].toKey)
 			for _, extract := range kvtOp.extractKvtGroup {
 				fromKey, toKey, extractKey := extract.fromKey, extract.toKey, extract.extractKey
 				if kvtOp.mapSource == "headers" {
@@ -1032,16 +1036,12 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 					proxywasm.LogWarnf("extract key failed, source:%s not exists in %s", fromKey, kvtOp.mapSource)
 					continue
 				}
-				// SLS只收录Info级别以上的插件日志，为联调方便，将插件日志级别调整为Info。稳定运行后建议调整为Debug级别。
-				proxywasm.LogInfof("extract search key:%s in source:%s", fromKey, kvtOp.mapSource)
+				proxywasm.LogDebugf("extract search key:%s in source:%s", fromKey, kvtOp.mapSource)
 				if fromValue, ok := source.search(fromKey); ok {
-					// 从fromValue中提取extractKey对应的值，追加到toKey的值中
-					// fromValue: []string{"{"preferred-biz-gateway-service-addr": "x.x.x.x:9090","preferred-dubbo-service-tag":"gray"}"}
 					if len(fromValue.([]string)) == 0 {
 						proxywasm.LogWarnf("extract key failed, fromKey:%s value is empty", fromKey)
 						continue
 					}
-					// 提取extractKey对应的值
 					extractValue := ""
 					for _, v := range fromValue.([]string) {
 						if gjson.Get(v, extractKey).Exists() {
@@ -1066,7 +1066,6 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 			// inject: 若指定 fromKey不存在则无操作; 否则将 fromKey的值, 以 injectKey={fromKey: fromValue} 的形式append到toKey的toValue中, 如果toKey不存在则创建
 			// 例: Header: "preferred-biz-gateway-service-addr": "x.x.x.x:9090"
 			// fromKey: preferred-biz-gateway-service-addr, toKey: Baggage, injectKey: traffic.llm_sdk.traffic_policy => Baggage: traffic.llm_sdk.traffic_policy={"preferred-biz-gateway-service-addr": "x.x.x.x:9090"}
-			proxywasm.LogInfof("going to inject key:%s from key:%s to key:%s", kvtOp.injectKvtGroup[0].injectKey, kvtOp.injectKvtGroup[0].fromKey, kvtOp.injectKvtGroup[0].toKey)
 			for _, inject := range kvtOp.injectKvtGroup {
 				fromKey, toKey, injectKey := inject.fromKey, inject.toKey, inject.injectKey
 				if kvtOp.mapSource == "headers" {
@@ -1077,22 +1076,17 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 					proxywasm.LogWarnf("inject source key failed, source:%s not exists in %s", fromKey, kvtOp.mapSource)
 					continue
 				}
-				// SLS只收录Info级别以上的插件日志，为联调方便，将插件日志级别调整为Info。稳定运行后建议调整为Debug级别。
-				proxywasm.LogInfof("inject search key:%s in source:%s", fromKey, kvtOp.mapSource)
+				proxywasm.LogDebugf("inject search key:%s in source:%s", fromKey, kvtOp.mapSource)
 				if fromValue, ok := source.search(fromKey); ok {
-					// fromValue: []string{"{"preferred-biz-gateway-service-addr": "x.x.x.x:9090","preferred-dubbo-service-tag":"gray"}"}
 					if len(fromValue.([]string)) == 0 {
 						proxywasm.LogWarnf("inject key failed, fromKey:%s value is empty", fromKey)
 					}
-					// injectKey={fromKey: fromValue}
 					injectValue := fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, fromValue.([]string)[0])
-					// append到toKey的toValue中
 					if toValue, ok := kvs[toKey]; ok {
 						kvs[toKey] = append(toValue, injectValue)
 					} else {
 						kvs[toKey] = []string{injectValue}
 					}
-					// SLS只收录Info级别以上的插件日志，为联调方便，将插件日志级别调整为Info。稳定运行后建议调整为Debug级别。
 					proxywasm.LogInfof("inject key:%s to key:%s success, value after inject is: %v", fromKey, toKey, kvs[toKey])
 				}
 			}
