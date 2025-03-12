@@ -114,7 +114,7 @@ type TransformerConfig struct {
 
 type TransformRule struct {
 	// @Title 转换操作类型
-	// @Description 指定转换操作类型，可选值为 remove, rename, replace, add, append, map, dedupe, inject
+	// @Description 指定转换操作类型，可选值为 remove, rename, replace, add, append, map, dedupe, extract, inject
 	operate string `yaml:"operate"`
 
 	// @Title 映射来源类型
@@ -307,7 +307,7 @@ func constructParam(item gjson.Result, op, valueType string) Param {
 	case "map":
 		p.mapParam.fromKey = item.Get("fromKey").String()
 		p.mapParam.toKey = item.Get("toKey").String()
-	case "emap":
+	case "extract":
 		p.extractParam.fromKey = item.Get("fromKey").String()
 		p.extractParam.toKey = item.Get("toKey").String()
 		p.extractParam.extractKey = item.Get("extractKey").String()
