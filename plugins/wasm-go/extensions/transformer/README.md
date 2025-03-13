@@ -668,10 +668,12 @@ reqRules:
 - operate: extract
   headers: 
   - fromKey: X-DashScope-TrafficPolicy 
+	  extractKey: preferred-biz-gateway-service-addr  
     toKey: preferred-biz-gateway-service-addr
-	extractKey: preferred-biz-gateway-service-addr  
 - operate: inject
   headers:
-  - fromKey: preferred-biz-gateway-service-addr 
-    toKey: Baggage
-	injectKey: traffic.llm_sdk.traffic_policy 
+  - fromKey: X-DashScope-TrafficPolicy
+    InjectKey: Baggage
+	  toKey: traffic.llm_sdk.traffic_policy
+```
+

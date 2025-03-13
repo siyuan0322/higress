@@ -1063,9 +1063,9 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 				}
 			}
 		case InjectK:
-			// inject: 若指定 fromKey不存在则无操作; 否则将 fromKey的值, 以 injectKey={fromKey: fromValue} 的形式append到toKey的toValue中, 如果toKey不存在则创建
-			// 例: Header: "preferred-biz-gateway-service-addr": "x.x.x.x:9090"
-			// fromKey: preferred-biz-gateway-service-addr, toKey: Baggage, injectKey: traffic.llm_sdk.traffic_policy => Baggage: traffic.llm_sdk.traffic_policy={"preferred-biz-gateway-service-addr": "x.x.x.x:9090"}
+			// inject: 若指定 fromKey 不存在则无操作; 否则将 fromKey 的值, 以 toKey=fromValue 的形式 append 到injectKey 的value 中, 如果injectKey 不存在则创建
+			// 例: Header: X-DashScope-TrafficPolicy: {"preferred-biz-gateway-service-addr": "x.x.x.x:9090"}
+			// injectKey: Baggage, fromKey: X-DashScope-TrafficPolicy, toKey: traffic.llm_sdk.traffic_policy => Baggage: traffic.llm_sdk.traffic_policy={"preferred-biz-gateway-service-addr": "x.x.x.x:9090"}
 			for _, inject := range kvtOp.injectKvtGroup {
 				fromKey, toKey, injectKey := inject.fromKey, inject.toKey, inject.injectKey
 				if kvtOp.mapSource == "headers" {
@@ -1081,13 +1081,13 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 					if len(fromValue.([]string)) == 0 {
 						proxywasm.LogWarnf("inject key failed, fromKey:%s value is empty", fromKey)
 					}
-					injectValue := fmt.Sprintf("%s={\"%s\": \"%s\"}", injectKey, fromKey, fromValue.([]string)[0])
-					if toValue, ok := kvs[toKey]; ok {
-						kvs[toKey] = append(toValue, injectValue)
+					injectValue := fmt.Sprintf("%s=%s", toKey, fromValue.([]string)[0])
+					if value, ok := kvs[injectKey]; ok {
+						kvs[injectKey] = append(value, injectValue)
 					} else {
-						kvs[toKey] = []string{injectValue}
+						kvs[injectKey] = []string{injectValue}
 					}
-					proxywasm.LogInfof("inject key:%s to key:%s success, value after inject is: %v", fromKey, toKey, kvs[toKey])
+					proxywasm.LogInfof("inject key:%s to key:%s success, value after inject is: %v", fromKey, injectKey, kvs[injectKey])
 				}
 			}
 		case DedupeK:
