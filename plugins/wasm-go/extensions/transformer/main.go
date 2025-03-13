@@ -1054,11 +1054,7 @@ func (h kvHandler) handle(host, path string, kvs map[string][]string, mapSourceD
 						continue
 					}
 					// 追加到toKey的值中
-					if toValue, ok := kvs[toKey]; ok {
-						kvs[toKey] = append(toValue, extractValue)
-					} else {
-						kvs[toKey] = []string{extractValue}
-					}
+					kvs[toKey] = []string{extractValue}
 					proxywasm.LogInfof("extract key:%s to key:%s success, value after extract is: %v", fromKey, toKey, kvs[toKey])
 				}
 			}
